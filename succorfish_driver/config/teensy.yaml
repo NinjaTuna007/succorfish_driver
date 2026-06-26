@@ -1,0 +1,15 @@
+# Profile: talk to the Teensy 4.1 front-end (OWTT timing / passthrough), which
+# enumerates as a USB CDC ACM device at 115200 baud. The Teensy relays modem
+# traffic; this bridge still treats it as a transparent line pipe.
+/**:
+  ros__parameters:
+    profile: "teensy"
+    serial:
+      port: "/dev/ttyACM0"
+      port_fallback: "/dev/ttyACM1"
+      baudrate: 115200
+      timeout: 1.0
+    command_terminator: "\r\n"
+    encoding: "utf-8"
+    reconnect_delay_s: 2.0
+    recent_lines_buffer: 200

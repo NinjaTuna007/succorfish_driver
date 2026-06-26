@@ -1,0 +1,15 @@
+# Profile: talk directly to the Succorfish Delphis modem over USB-serial.
+# Applied to any node name/namespace via the /** wildcard so launch-time
+# namespacing still picks these up.
+/**:
+  ros__parameters:
+    profile: "succorfish"
+    serial:
+      port: "/dev/ttyUSB0"
+      port_fallback: "/dev/ttyUSB1"
+      baudrate: 9600
+      timeout: 1.0
+    command_terminator: "\r\n"
+    encoding: "utf-8"
+    reconnect_delay_s: 2.0
+    recent_lines_buffer: 200

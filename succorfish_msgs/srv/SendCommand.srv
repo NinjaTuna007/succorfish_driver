@@ -1,0 +1,12 @@
+# Write a command to the modem and optionally wait for a reply line.
+# This keeps the driver protocol-agnostic: callers supply the raw command and,
+# if they need a synchronous reply, a regex describing the line to wait for.
+string command                 # raw command to write
+bool append_terminator true    # append the driver's configured command terminator
+string expect_regex            # if non-empty, wait for a line matching this regex
+float64 timeout                # seconds to wait for a match (<= 0 means write and return immediately)
+---
+bool success                   # written ok, and (when expect_regex set) a match arrived before timeout
+string matched_line            # first line matching expect_regex (empty if none / not requested)
+string[] lines                 # all lines received during the wait window
+string message                 # human-readable status / error detail
