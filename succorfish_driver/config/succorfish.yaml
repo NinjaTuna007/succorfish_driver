@@ -1,0 +1,35 @@
+# Profile: talk directly to the Succorfish Delphis modem over USB-serial.
+# Applied to any node name/namespace via the /** wildcard so launch-time
+# namespacing still picks these up.
+/**:
+  ros__parameters:
+    profile: "succorfish"
+    # Where the bytes come from: "serial" (real port, default), "test"
+    # (in-memory pretend modem -- no hardware) or "unity" (smarcUnity acoustic
+    # bridge). Override on the CLI with backend:=test / backend:=unity.
+    backend: "serial"
+    serial:
+      port: "/dev/ttyUSB0"
+      port_fallback: "/dev/ttyUSB1"
+      baudrate: 9600
+      timeout: 1.0
+    command_terminator: "\r\n"
+    encoding: "utf-8"
+    reconnect_delay_s: 2.0
+    recent_lines_buffer: 200
+    # "test" backend (only used when backend == "test"): pretend ping range and
+    # optional stochastic faults for robustness testing.
+    test:
+      range_m: 100.0
+      sound_velocity: 1500.0
+      fault:
+        drop_prob: 0.0
+        garble_prob: 0.0
+    # "unity" backend (only used when backend == "unity"): topics to/from the
+    # smarcUnity acoustic transceiver and this modem's own address.
+    unity:
+      write_topic: "acoustic/write"
+      read_topic: "acoustic/read"
+      own_modem_id: "001"
+      offset_us: 0.0
+      id_width: 3

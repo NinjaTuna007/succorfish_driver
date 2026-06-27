@@ -9,9 +9,11 @@ Skipped automatically if pyserial / rclpy are unavailable.
 """
 
 import os
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
-import tty
 
 import pytest
 
@@ -20,6 +22,7 @@ rclpy = pytest.importorskip("rclpy")
 
 from rclpy.executors import MultiThreadedExecutor  # noqa: E402
 from rclpy.parameter import Parameter  # noqa: E402
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
 
 from succorfish_msgs.msg import SerialLine, Topics  # noqa: E402
@@ -38,14 +41,34 @@ def _wait_until(predicate, timeout=5.0, period=0.02):
 
 @pytest.fixture
 def serial_bridge():
-    master, slave = os.openpty()
-    tty.setraw(master)
-    tty.setraw(slave)
-    slave_name = os.ttyname(slave)
+    # Back the virtual port with a socat-linked pty pair rather than a bare
+    # ``os.openpty()``. A bare pty read through pyserial 3.5 intermittently trips
+    # "device reports readiness to read but returned no data", which the driver
+    # treats as a disconnect and reconnects in a loop -- so the link is often
+    # down (``_connected`` False) at shutdown and the registered shutdown command
+    # is never written. socat keeps both ends open and behaves like a real tty.
+    socat = shutil.which("socat")
+    if socat is None:
+        pytest.skip("socat not available")
+    tmp = tempfile.mkdtemp(prefix="drvtest_")
+    driver_link = os.path.join(tmp, "driver")   # the driver opens this end
+    host_link = os.path.join(tmp, "host")        # the test drives this end
+    proc = subprocess.Popen(
+        [socat,
+         f"pty,raw,echo=0,link={driver_link}",
+         f"pty,raw,echo=0,link={host_link}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 5.0
+    while time.time() < deadline and not (
+            os.path.exists(driver_link) and os.path.exists(host_link)):
+        time.sleep(0.02)
+    assert os.path.exists(driver_link) and os.path.exists(host_link), \
+        "socat did not create the pty links"
+    master = os.open(host_link, os.O_RDWR | os.O_NOCTTY)
 
     rclpy.init()
     node = SuccorfishDriver(parameter_overrides=[
-        Parameter("serial.port", value=slave_name),
+        Parameter("serial.port", value=driver_link),
         Parameter("serial.port_fallback", value=""),
         Parameter("serial.baudrate", value=9600),
         Parameter("reconnect_delay_s", value=0.1),
@@ -65,11 +88,19 @@ def serial_bridge():
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-        os.close(master)
         try:
-            os.close(slave)
+            os.close(master)
         except OSError:
             pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_inbound_line_is_published_on_rx(serial_bridge):
@@ -102,6 +133,45 @@ def test_tx_topic_writes_to_port(serial_bridge):
         return b"$P001\r\n" in bytes(got)
 
     assert _wait_until(saw_command), f"got {bytes(got)!r}"
+
+
+def test_shutdown_command_written_to_port_on_exit(serial_bridge):
+    """A registered shutdown command is written to the wire on graceful exit.
+
+    This is the wire-mode guarantee: even if the driver is the one going away,
+    it replays the client-registered command (e.g. ``$Y<id>W``) before closing.
+    """
+    node, master = serial_bridge
+    latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+    pub = node.create_publisher(String, Topics.SHUTDOWN_COMMAND_TOPIC, latched)
+    pub.publish(String(data="$Y101W"))
+
+    assert _wait_until(lambda: node._shutdown_command == "$Y101W"), \
+        "driver never registered the shutdown command"
+
+    # Drain anything already buffered on the master before we trigger shutdown.
+    os.set_blocking(master, False)
+    try:
+        os.read(master, 4096)
+    except BlockingIOError:
+        pass
+
+    node.shutdown()
+
+    got = bytearray()
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        try:
+            chunk = os.read(master, 4096)
+        except BlockingIOError:
+            chunk = b""
+        if chunk:
+            got.extend(chunk)
+        if b"$Y101W\r\n" in bytes(got):
+            break
+        time.sleep(0.02)
+
+    assert b"$Y101W\r\n" in bytes(got), f"got {bytes(got)!r}"
 
 
 def test_send_command_returns_matching_reply(serial_bridge):

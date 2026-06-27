@@ -4,6 +4,10 @@
 /**:
   ros__parameters:
     profile: "teensy"
+    # Where the bytes come from: "serial" (real port, default), "test"
+    # (in-memory pretend modem -- no hardware) or "unity" (smarcUnity acoustic
+    # bridge). Override on the CLI with backend:=test / backend:=unity.
+    backend: "serial"
     serial:
       port: "/dev/ttyACM0"
       port_fallback: "/dev/ttyACM1"
@@ -13,3 +17,20 @@
     encoding: "utf-8"
     reconnect_delay_s: 2.0
     recent_lines_buffer: 200
+    # "test" backend (only used when backend == "test"): a $Y<id><mode> config
+    # is acked with #A<id>; optional stochastic faults for robustness testing.
+    test:
+      range_m: 100.0
+      sound_velocity: 1500.0
+      fault:
+        drop_prob: 0.0
+        garble_prob: 0.0
+    # "unity" backend (only used when backend == "unity"): bridges the OWTT
+    # broadcast loop. Each received packet yields a #B<id><nn><payload> frame and
+    # a paired #I<delta_us> timing line (delta = ground-truth time of flight).
+    unity:
+      write_topic: "acoustic/write"
+      read_topic: "acoustic/read"
+      own_modem_id: "007"
+      offset_us: 0.0
+      id_width: 3

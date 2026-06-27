@@ -6,3 +6,4 @@ string RX_TOPIC = "succorfish/rx"                       # succorfish_msgs/Serial
 string TX_TOPIC = "succorfish/tx"                       # std_msgs/String           - raw outbound command (clients -> driver)
 string STATUS_TOPIC = "succorfish/connected"            # std_msgs/Bool             - link up/down (driver -> clients)
 string SEND_COMMAND_SERVICE = "succorfish/send_command" # succorfish_msgs/SendCommand - synchronous request/response
+string SHUTDOWN_COMMAND_TOPIC = "succorfish/shutdown_command" # std_msgs/String     - latched; client registers a command the driver writes on graceful exit

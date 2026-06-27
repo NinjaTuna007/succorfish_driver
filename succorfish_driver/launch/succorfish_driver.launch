@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<!--
+  Launch the succorfish_driver serial bridge (XML).
+
+  Pick a hardware profile (succorfish -> 9600/ttyUSB, teensy -> 115200/ttyACM):
+  it selects the bundled config/<profile>.yaml. Pass config_file:=... to use your
+  own params file instead.
+
+  Pick where the bytes come from with backend: 'serial' (real port, default),
+  'test' (in-memory pretend modem, no hardware) or 'unity' (smarcUnity acoustic
+  transceiver bridge). The unity_* args are only consulted by the unity backend.
+
+  Examples:
+    ros2 launch succorfish_driver succorfish_driver.launch
+    ros2 launch succorfish_driver succorfish_driver.launch profile:=teensy
+    ros2 launch succorfish_driver succorfish_driver.launch backend:=test
+    ros2 launch succorfish_driver succorfish_driver.launch \
+        profile:=teensy backend:=unity namespace:=lolo unity_own_modem_id:=101
+    ros2 launch succorfish_driver succorfish_driver.launch \
+        config_file:=/abs/path/to/my_serial.yaml
+-->
+<launch>
+    <arg name="profile" default="succorfish"
+         description="Hardware profile: 'succorfish' (9600/ttyUSB) or 'teensy' (115200/ttyACM); selects config/&lt;profile&gt;.yaml."/>
+    <arg name="config_file"
+         default="$(find-pkg-share succorfish_driver)/config/$(var profile).yaml"
+         description="Params YAML loaded by the node; defaults to the profile file."/>
+    <arg name="namespace" default=""
+         description="ROS namespace for the driver node (e.g. the robot name)."/>
+
+    <arg name="backend" default="serial"
+         description="I/O source: 'serial' (real port), 'test' (in-memory modem) or 'unity' (smarcUnity bridge)."/>
+
+    <!-- 'unity' backend knobs (ignored by the serial/test backends). -->
+    <arg name="unity_own_modem_id" default="001"
+         description="This modem's id, stamped on transmitted acoustic packets."/>
+    <arg name="unity_write_topic" default="acoustic/write"
+         description="StringStamped topic the driver publishes to (Unity transmitter subscribes)."/>
+    <arg name="unity_read_topic" default="acoustic/read"
+         description="StringStamped topic the driver subscribes to (Unity receiver publishes)."/>
+    <arg name="unity_offset_us" default="0.0"
+         description="Microseconds added to the derived OWTT delta (#I)."/>
+
+    <node pkg="succorfish_driver" exec="succorfish_driver_node"
+          name="succorfish_driver_node" namespace="$(var namespace)" output="screen">
+        <param from="$(var config_file)"/>
+        <param name="backend" type="str" value="$(var backend)"/>
+        <param name="unity.own_modem_id" type="str" value="$(var unity_own_modem_id)"/>
+        <param name="unity.write_topic" type="str" value="$(var unity_write_topic)"/>
+        <param name="unity.read_topic" type="str" value="$(var unity_read_topic)"/>
+        <param name="unity.offset_us" type="float" value="$(var unity_offset_us)"/>
+    </node>
+</launch>
