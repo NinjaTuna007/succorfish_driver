@@ -44,6 +44,7 @@ class SuccorfishDriver(Node):
 
         self.declare_parameter("serial.port", "/dev/ttyUSB0")
         self.declare_parameter("serial.port_fallback", "/dev/ttyUSB1")
+        self.declare_parameter("serial.port_override", "")
         self.declare_parameter("serial.baudrate", 9600)
         self.declare_parameter("serial.timeout", 1.0)
         self.declare_parameter("command_terminator", "\r\n")
@@ -75,6 +76,7 @@ class SuccorfishDriver(Node):
         gp = self.get_parameter
         self.port = gp("serial.port").get_parameter_value().string_value
         self.port_fallback = gp("serial.port_fallback").get_parameter_value().string_value
+        self.port_override = gp("serial.port_override").get_parameter_value().string_value
         self.baudrate = gp("serial.baudrate").get_parameter_value().integer_value
         self.serial_timeout = gp("serial.timeout").get_parameter_value().double_value
         self.command_terminator = gp("command_terminator").get_parameter_value().string_value
@@ -134,7 +136,7 @@ class SuccorfishDriver(Node):
     # ----- serial lifecycle -------------------------------------------------
 
     def _open_serial(self):
-        for port in (self.port, self.port_fallback):
+        for port in (self.port_override, self.port, self.port_fallback):
             if not port:
                 continue
             try:

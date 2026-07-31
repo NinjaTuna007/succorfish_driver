@@ -31,6 +31,9 @@
     <arg name="backend" default="serial"
          description="I/O source: 'serial' (real port), 'test' (in-memory modem) or 'unity' (smarcUnity bridge)."/>
 
+    <arg name="serial_port" default=""
+         description="Override serial.port from the profile YAML (empty = use YAML). Useful with /dev/serial/by-id links that survive ACM renumbering."/>
+
     <!-- 'unity' backend knobs (ignored by the serial/test backends). -->
     <arg name="unity_own_modem_id" default="001"
          description="This modem's id, stamped on transmitted acoustic packets."/>
@@ -44,6 +47,7 @@
     <node pkg="succorfish_driver" exec="succorfish_driver_node"
           name="succorfish_driver_node" namespace="$(var namespace)" output="screen">
         <param from="$(var config_file)"/>
+        <param name="serial.port_override" type="str" value="$(var serial_port)"/>
         <param name="backend" type="str" value="$(var backend)"/>
         <param name="unity.own_modem_id" type="str" value="$(var unity_own_modem_id)"/>
         <param name="unity.write_topic" type="str" value="$(var unity_write_topic)"/>
