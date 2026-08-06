@@ -241,6 +241,22 @@ class SuccorfishDriver(Node):
             for line in self._assembler.feed(data):
                 self._publish_line(line)
 
+    @staticmethod
+    def _is_teensy_config_tx(command):
+        """Host→Teensy mode/config commands worth surfacing at INFO."""
+        return command.startswith("$Y") or command.startswith("$Z")
+
+    @staticmethod
+    def _is_teensy_config_rx(line):
+        """Teensy/modem replies that resolve (or reject) a config attempt."""
+        return (
+            line.startswith("#Y")
+            or line.startswith("#A")
+            or line.startswith("#E,Y")
+            or line.startswith("#IGNOREPPSAFTER")
+            or line.startswith("#TXWARN")
+        )
+
     def _publish_line(self, line):
         msg = SerialLine()
         msg.stamp = self.get_clock().now().to_msg()
@@ -250,7 +266,10 @@ class SuccorfishDriver(Node):
             self._seq += 1
             self._recent.append((self._seq, line))
             self._cond.notify_all()
-        self.get_logger().debug(f"RX: {line!r}")
+        if self._is_teensy_config_rx(line):
+            self.get_logger().info(f"RX config: {line}")
+        else:
+            self.get_logger().debug(f"RX: {line!r}")
 
     # ----- writing ----------------------------------------------------------
 
@@ -262,7 +281,10 @@ class SuccorfishDriver(Node):
         try:
             with self._write_lock:
                 ser.write(payload.encode(self.encoding, "replace"))
-            self.get_logger().debug(f"TX: {payload!r}")
+            if self._is_teensy_config_tx(command):
+                self.get_logger().info(f"TX config: {command}")
+            else:
+                self.get_logger().debug(f"TX: {payload!r}")
             return True, ""
         except Exception as exc:  # noqa: BLE001 - any serial error -> reconnect
             self._on_disconnect(f"write error: {exc}")
