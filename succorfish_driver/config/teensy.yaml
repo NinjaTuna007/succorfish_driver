@@ -17,6 +17,9 @@
     encoding: "utf-8"
     reconnect_delay_s: 2.0
     recent_lines_buffer: 200
+    # Seconds to wait after a TX before the next one (0 = no extra spacing).
+    # SendCommand still holds the TX session until its reply wait finishes.
+    min_tx_gap_s: 0.0
     # "test" backend (only used when backend == "test"): a $Y<id><mode> config
     # is acked with #A<id>; optional stochastic faults for robustness testing.
     test:

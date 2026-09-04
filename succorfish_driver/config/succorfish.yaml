@@ -17,6 +17,11 @@
     encoding: "utf-8"
     reconnect_delay_s: 2.0
     recent_lines_buffer: 200
+    # Seconds to wait after a TX before the next one (0 = no extra spacing).
+    # SendCommand still holds the TX session until its reply wait finishes, so
+    # two nodes cannot interleave $P and $B even at 0. Set ~0.8–1.0 if a second
+    # fire-and-forget write must not land during a modem acoustic burst.
+    min_tx_gap_s: 0.0
     # "test" backend (only used when backend == "test"): pretend ping range and
     # optional stochastic faults for robustness testing.
     test:

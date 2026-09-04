@@ -209,3 +209,59 @@ def test_send_command_returns_matching_reply(serial_bridge):
     finally:
         sub_exec.shutdown()
         client_node.destroy_node()
+
+
+def test_tx_topic_waits_until_send_command_finishes(serial_bridge):
+    """A topic TX must not land on the wire while SendCommand is awaiting a reply."""
+    node, master = serial_bridge
+
+    client_node = rclpy.create_node('tx_session_test_client')
+    sub_exec = MultiThreadedExecutor()
+    sub_exec.add_node(client_node)
+    threading.Thread(target=sub_exec.spin, daemon=True).start()
+
+    try:
+        cli = client_node.create_client(SendCommand, Topics.SEND_COMMAND_SERVICE)
+        assert cli.wait_for_service(timeout_sec=5.0)
+
+        req = SendCommand.Request()
+        req.command = '$P002'
+        req.append_terminator = True
+        req.expect_regex = r'T\d+'
+        req.timeout = 4.0
+        future = cli.call_async(req)
+        got = bytearray()
+
+        def pump():
+            got.extend(_read_available(master))
+            return bytes(got)
+
+        assert _wait_until(lambda: b'$P002\r\n' in pump(), timeout=2.0)
+
+        pub = node.create_publisher(String, Topics.TX_TOPIC, 10)
+        pub.publish(String(data='$B0459.1,18.8'))
+        time.sleep(0.4)
+        pump()
+        assert b'$B' not in bytes(got), f'$B wrote during in-flight ping: {bytes(got)!r}'
+
+        os.write(master, b'#R002T5678\r\n')
+        assert _wait_until(lambda: future.done(), timeout=4.0)
+        assert future.result().success
+        assert _wait_until(lambda: b'$B0459.1,18.8\r\n' in pump(), timeout=2.0)
+    finally:
+        sub_exec.shutdown()
+        client_node.destroy_node()
+
+
+def _read_available(fd):
+    os.set_blocking(fd, False)
+    got = bytearray()
+    while True:
+        try:
+            chunk = os.read(fd, 4096)
+        except BlockingIOError:
+            break
+        if not chunk:
+            break
+        got.extend(chunk)
+    return bytes(got)

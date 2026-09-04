@@ -12,7 +12,10 @@ ROS graph as a protocol-agnostic line pipe:
 Protocol framing (``$P``, ``$B``, ``#R...T...``, ``#I``, ...) is intentionally
 NOT understood here; the existing parser/builder helpers in ``serial_ping_pkg``
 stay client-side. A single background thread does all reading so the serial
-port has exactly one owner; writes are serialized with a lock.
+port has exactly one owner. Outbound commands share one TX session so a
+topic write cannot land on the wire while ``SendCommand`` is still waiting for
+a reply (two nodes cannot stomp ``$P`` with ``$B``). Optional ``min_tx_gap_s``
+spaces successive writes.
 """
 
 import signal
@@ -51,6 +54,7 @@ class SuccorfishDriver(Node):
         self.declare_parameter("encoding", "utf-8")
         self.declare_parameter("reconnect_delay_s", 2.0)
         self.declare_parameter("recent_lines_buffer", 200)
+        self.declare_parameter("min_tx_gap_s", 0.0)
         self.declare_parameter("profile", "succorfish")
 
         # Where the bytes come from. 'serial' (default) is the real port;
@@ -83,6 +87,7 @@ class SuccorfishDriver(Node):
         self.encoding = gp("encoding").get_parameter_value().string_value
         self.reconnect_delay_s = gp("reconnect_delay_s").get_parameter_value().double_value
         buf_len = gp("recent_lines_buffer").get_parameter_value().integer_value
+        self.min_tx_gap_s = gp("min_tx_gap_s").get_parameter_value().double_value
         self.profile = gp("profile").get_parameter_value().string_value
         self.backend = gp("backend").get_parameter_value().string_value.lower()
 
@@ -96,7 +101,11 @@ class SuccorfishDriver(Node):
         # The driver stays protocol-agnostic: it just replays whatever string was
         # last registered, while it is still the holder of the open port.
         self._shutdown_command = ""
+        # One session for all outbound paths (topic TX, SendCommand, shutdown).
+        # SendCommand holds it until the optional reply wait finishes.
+        self._tx_session = threading.Lock()
         self._write_lock = threading.Lock()
+        self._last_tx_monotonic = 0.0
         self._cond = threading.Condition()
         self._seq = 0
         self._recent = deque(maxlen=max(buf_len, 1))
@@ -273,6 +282,28 @@ class SuccorfishDriver(Node):
 
     # ----- writing ----------------------------------------------------------
 
+    def _enter_tx(self, timeout=None):
+        """Acquire the outbound session and honour ``min_tx_gap_s``.
+
+        ``timeout`` is seconds to wait for the session (None = block). Returns
+        False if the lock was not acquired.
+        """
+        if timeout is None:
+            acquired = self._tx_session.acquire()
+        else:
+            acquired = self._tx_session.acquire(timeout=timeout)
+        if not acquired:
+            return False
+        gap = self.min_tx_gap_s
+        if gap > 0.0 and self._last_tx_monotonic > 0.0:
+            wait = gap - (time.monotonic() - self._last_tx_monotonic)
+            if wait > 0.0:
+                self._stop_event.wait(wait)
+        return True
+
+    def _leave_tx(self):
+        self._tx_session.release()
+
     def _write(self, command, append_terminator):
         ser = self._ser
         if ser is None or not self._connected:
@@ -281,6 +312,7 @@ class SuccorfishDriver(Node):
         try:
             with self._write_lock:
                 ser.write(payload.encode(self.encoding, "replace"))
+            self._last_tx_monotonic = time.monotonic()
             if self._is_teensy_config_tx(command):
                 self.get_logger().info(f"TX config: {command}")
             else:
@@ -291,7 +323,13 @@ class SuccorfishDriver(Node):
             return False, f"write failed: {exc}"
 
     def _on_tx(self, msg):
-        ok, err = self._write(msg.data, True)
+        if not self._enter_tx():
+            self.get_logger().warn(f"TX dropped {msg.data!r}: tx session busy")
+            return
+        try:
+            ok, err = self._write(msg.data, True)
+        finally:
+            self._leave_tx()
         if not ok:
             self.get_logger().warn(f"TX dropped {msg.data!r}: {err}")
 
@@ -305,6 +343,16 @@ class SuccorfishDriver(Node):
     # ----- synchronous send-command service ---------------------------------
 
     def _on_send_command(self, request, response):
+        if not self._enter_tx():
+            response.success = False
+            response.message = "tx session busy"
+            return response
+        try:
+            return self._send_command_locked(request, response)
+        finally:
+            self._leave_tx()
+
+    def _send_command_locked(self, request, response):
         with self._cond:
             start_seq = self._seq
 
@@ -363,7 +411,14 @@ class SuccorfishDriver(Node):
         # command (e.g. an OWTT node's "$Y<id>W"), then let it drain before close.
         try:
             if self._shutdown_command and self._ser is not None and self._connected:
-                ok, err = self._write(self._shutdown_command, True)
+                # Prefer the session so we do not interleave with an in-flight
+                # ping; fall back to a raw write if shutdown is already stopping.
+                held = self._enter_tx(timeout=1.0)
+                try:
+                    ok, err = self._write(self._shutdown_command, True)
+                finally:
+                    if held:
+                        self._leave_tx()
                 if ok:
                     self.get_logger().info(
                         f"Wrote shutdown command {self._shutdown_command!r} on exit.")

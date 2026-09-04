@@ -94,8 +94,14 @@ Two bundled config files, one per hardware stack:
 
 Parameters: `serial.port`, `serial.port_fallback`, `serial.baudrate`,
 `serial.timeout`, `command_terminator`, `encoding`, `reconnect_delay_s`,
-`recent_lines_buffer`, `profile`, `backend`. The node reconnects automatically
-on link loss.
+`recent_lines_buffer`, `min_tx_gap_s`, `profile`, `backend`. The node
+reconnects automatically on link loss.
+
+Outbound writes share one TX session: `SendCommand` holds it until the optional
+reply wait finishes, so a second node publishing on `succorfish/tx` cannot land
+`$B` while a ping is in flight. `min_tx_gap_s` (default 0) adds extra spacing
+after each write; set ~0.8–1.0 if a fire-and-forget command must not overlap a
+modem acoustic burst.
 
 ## Backends (where the bytes come from)
 
