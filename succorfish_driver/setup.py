@@ -23,7 +23,7 @@ setup(
     maintainer_email='sdup@kth.se',
     description='Transparent ROS 2 serial bridge that exclusively owns the '
                 'Succorfish modem / Teensy serial port and exposes it as RX/TX '
-                'topics plus a generic SendCommand service.',
+                'text topics, byte-frame topics, plus a generic SendCommand service.',
     license='MIT',
     entry_points={
         'console_scripts': [

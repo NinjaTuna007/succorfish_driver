@@ -6,7 +6,8 @@
   <description>
     Transparent serial bridge node: owns one serial port (Succorfish modem at
     9600/ttyUSB or Teensy front-end at 115200/ttyACM) and exposes it to the ROS
-    graph as RX/TX line topics plus a generic synchronous SendCommand service.
+    graph as RX/TX text topics, RX/TX byte frames, plus a generic synchronous
+    SendCommand service.
   </description>
   <maintainer email="sdup@kth.se">Shekhar Devm Upadhyay</maintainer>
   <license>MIT</license>

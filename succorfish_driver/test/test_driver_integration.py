@@ -25,7 +25,7 @@ from rclpy.parameter import Parameter  # noqa: E402
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
 
-from succorfish_msgs.msg import SerialLine, Topics  # noqa: E402
+from succorfish_msgs.msg import SerialFrame, SerialLine, Topics  # noqa: E402
 from succorfish_msgs.srv import SendCommand  # noqa: E402
 from succorfish_driver.succorfish_driver_node import SuccorfishDriver  # noqa: E402
 
@@ -265,3 +265,62 @@ def _read_available(fd):
             break
         got.extend(chunk)
     return bytes(got)
+
+
+def test_tx_bytes_written_verbatim_without_terminator(serial_bridge):
+    """``succorfish/tx_bytes`` is a raw UART write, including interior LF."""
+    node, master = serial_bridge
+    pub = node.create_publisher(SerialFrame, Topics.TX_BYTES_TOPIC, 10)
+    payload = b"$B05He\nlo"
+    msg = SerialFrame()
+    msg.data = payload
+    pub.publish(msg)
+
+    got = bytearray()
+
+    def saw():
+        got.extend(_read_available(master))
+        return payload in bytes(got)
+
+    assert _wait_until(saw), f"got {bytes(got)!r}"
+    wire = bytes(got)
+    idx = wire.find(payload)
+    after = wire[idx + len(payload):idx + len(payload) + 2]
+    assert after != b"\r\n", f"terminator appended: {wire!r}"
+
+
+def test_binary_broadcast_on_rx_bytes_not_split_on_rx(serial_bridge):
+    """A ``#B`` payload containing LF is one SerialFrame and no SerialLine."""
+    node, master = serial_bridge
+    frames = []
+    lines = []
+    node.create_subscription(
+        SerialFrame, Topics.RX_BYTES_TOPIC,
+        lambda m: frames.append(bytes(m.data)), 10)
+    node.create_subscription(
+        SerialLine, Topics.RX_TOPIC, lambda m: lines.append(m.line), 10)
+
+    payload = b"He\nlo"
+    frame = b"#B00705" + payload
+    os.write(master, frame + b"\r\n")
+
+    assert _wait_until(lambda: frame in frames), f"frames={frames!r}"
+    time.sleep(0.3)
+    assert not any(ln.startswith("#B") for ln in lines), f"lines={lines!r}"
+
+
+def test_ascii_broadcast_still_on_rx(serial_bridge):
+    node, master = serial_bridge
+    frames = []
+    lines = []
+    node.create_subscription(
+        SerialFrame, Topics.RX_BYTES_TOPIC,
+        lambda m: frames.append(bytes(m.data)), 10)
+    node.create_subscription(
+        SerialLine, Topics.RX_TOPIC, lambda m: lines.append(m.line), 10)
+
+    raw = b"#B00705Hello"
+    os.write(master, raw + b"\r\n")
+
+    assert _wait_until(lambda: "#B00705Hello" in lines), f"lines={lines!r}"
+    assert _wait_until(lambda: raw in frames), f"frames={frames!r}"

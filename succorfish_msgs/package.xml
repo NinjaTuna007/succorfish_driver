@@ -5,8 +5,9 @@
   <version>0.0.0</version>
   <description>
     Interfaces for the succorfish_driver serial bridge: centralized topic/service
-    names (Topics.msg), a stamped inbound serial line (SerialLine.msg), and a
-    generic synchronous send-command service (SendCommand.srv).
+    names (Topics.msg), a stamped inbound serial line (SerialLine.msg), a raw
+    byte frame (SerialFrame.msg), and a generic synchronous send-command service
+    (SendCommand.srv).
   </description>
   <maintainer email="sdup@kth.se">Shekhar Devm Upadhyay</maintainer>
   <license>MIT</license>

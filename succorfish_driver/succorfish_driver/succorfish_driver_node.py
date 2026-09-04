@@ -1,21 +1,29 @@
 """Transparent serial bridge for the Succorfish modem / Teensy front-end.
 
 This node exclusively owns one serial port and exposes it to the rest of the
-ROS graph as a protocol-agnostic line pipe:
+ROS graph as a protocol-agnostic serial pipe:
 
-* publishes every inbound line on ``RX_TOPIC`` (``succorfish_msgs/SerialLine``),
-* writes any raw command received on ``TX_TOPIC`` (``std_msgs/String``),
+* publishes every inbound *text* line on ``RX_TOPIC`` (``succorfish_msgs/SerialLine``),
+* publishes every inbound frame as raw bytes on ``RX_BYTES_TOPIC``
+  (``succorfish_msgs/SerialFrame``),
+* writes any raw command received on ``TX_TOPIC`` (``std_msgs/String``, appends
+  the configured terminator),
+* writes ``TX_BYTES_TOPIC`` (``SerialFrame``) to the UART as-is (no terminator),
 * reports link state on ``STATUS_TOPIC`` (``std_msgs/Bool``, latched),
 * offers a generic ``SendCommand`` service for synchronous request/response
   (write a command, optionally wait for a reply line matching a regex).
 
-Protocol framing (``$P``, ``$B``, ``#R...T...``, ``#I``, ...) is intentionally
-NOT understood here; the existing parser/builder helpers in ``serial_ping_pkg``
-stay client-side. A single background thread does all reading so the serial
-port has exactly one owner. Outbound commands share one TX session so a
-topic write cannot land on the wire while ``SendCommand`` is still waiting for
-a reply (two nodes cannot stomp ``$P`` with ``$B``). Optional ``min_tx_gap_s``
-spaces successive writes.
+NM3 ``$B``/``$U`` payloads may contain any byte, including CR/LF. The assembler
+uses the two-digit length field on ``#B``/``#U`` so those frames are not split
+on an interior newline. Everything else is still newline-delimited. Binary
+``#B``/``#U`` frames are published only on ``RX_BYTES_TOPIC`` (printable ASCII
+payloads also appear on ``RX_TOPIC`` so existing nodes keep working).
+
+Higher-level framing (``$P``, ``#R...T...``, ``#I``, codecs) stays client-side.
+A single background thread does all reading so the serial port has exactly one
+owner. Outbound commands share one TX session so a topic write cannot land on
+the wire while ``SendCommand`` is still waiting for a reply. Optional
+``min_tx_gap_s`` spaces successive writes.
 """
 
 import signal
@@ -33,10 +41,11 @@ from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from std_msgs.msg import Bool, String
 
-from succorfish_msgs.msg import SerialLine, Topics
+from succorfish_msgs.msg import SerialFrame, SerialLine, Topics
 from succorfish_msgs.srv import SendCommand
 
-from succorfish_driver.line_assembler import LineAssembler, first_match
+from succorfish_driver.frame_assembler import FrameAssembler
+from succorfish_driver.line_assembler import first_match
 
 
 class SuccorfishDriver(Node):
@@ -91,7 +100,7 @@ class SuccorfishDriver(Node):
         self.profile = gp("profile").get_parameter_value().string_value
         self.backend = gp("backend").get_parameter_value().string_value.lower()
 
-        self._assembler = LineAssembler(encoding=self.encoding)
+        self._assembler = FrameAssembler(encoding=self.encoding)
         self._ser = None
         self._connected = None  # None = unknown, forces first status publish
         self._running = True
@@ -113,11 +122,16 @@ class SuccorfishDriver(Node):
         cb = ReentrantCallbackGroup()
 
         self.rx_pub = self.create_publisher(SerialLine, Topics.RX_TOPIC, 10)
+        self.rx_bytes_pub = self.create_publisher(
+            SerialFrame, Topics.RX_BYTES_TOPIC, 10)
         latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         self.status_pub = self.create_publisher(Bool, Topics.STATUS_TOPIC, latched)
 
         self.tx_sub = self.create_subscription(
             String, Topics.TX_TOPIC, self._on_tx, 10, callback_group=cb)
+        self.tx_bytes_sub = self.create_subscription(
+            SerialFrame, Topics.TX_BYTES_TOPIC, self._on_tx_bytes, 10,
+            callback_group=cb)
         self.send_srv = self.create_service(
             SendCommand, Topics.SEND_COMMAND_SERVICE, self._on_send_command,
             callback_group=cb)
@@ -137,7 +151,8 @@ class SuccorfishDriver(Node):
             source = f"backend '{self.backend}'"
         self.get_logger().info(
             f"succorfish_driver_node ({self.profile}, {self.backend or 'serial'}) "
-            f"bridging {source}  ->  RX:{Topics.RX_TOPIC}  TX:{Topics.TX_TOPIC}")
+            f"bridging {source}  ->  RX:{Topics.RX_TOPIC}  TX:{Topics.TX_TOPIC}  "
+            f"RX_BYTES:{Topics.RX_BYTES_TOPIC}  TX_BYTES:{Topics.TX_BYTES_TOPIC}")
 
         self._reader = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader.start()
@@ -247,8 +262,8 @@ class SuccorfishDriver(Node):
                 continue
             if not data:
                 continue
-            for line in self._assembler.feed(data):
-                self._publish_line(line)
+            for raw, text in self._assembler.feed(data):
+                self._publish_frame(raw, text)
 
     @staticmethod
     def _is_teensy_config_tx(command):
@@ -266,9 +281,20 @@ class SuccorfishDriver(Node):
             or line.startswith("#TXWARN")
         )
 
-    def _publish_line(self, line):
+    def _publish_frame(self, raw, text):
+        stamp = self.get_clock().now().to_msg()
+        frame = SerialFrame()
+        frame.stamp = stamp
+        frame.data = bytes(raw)
+        self.rx_bytes_pub.publish(frame)
+        if text is None:
+            self.get_logger().debug(f"RX bytes: {bytes(raw)!r}")
+            return
+        self._publish_line(text, stamp=stamp)
+
+    def _publish_line(self, line, stamp=None):
         msg = SerialLine()
-        msg.stamp = self.get_clock().now().to_msg()
+        msg.stamp = stamp if stamp is not None else self.get_clock().now().to_msg()
         msg.line = line
         self.rx_pub.publish(msg)
         with self._cond:
@@ -304,23 +330,33 @@ class SuccorfishDriver(Node):
     def _leave_tx(self):
         self._tx_session.release()
 
-    def _write(self, command, append_terminator):
+    def _write_bytes(self, raw):
+        """Write ``raw`` to the UART as-is. Caller must hold ``_tx_session``."""
         ser = self._ser
         if ser is None or not self._connected:
             return False, "serial port not connected"
-        payload = command + (self.command_terminator if append_terminator else "")
+        payload = bytes(raw)
+        if not payload:
+            return False, "empty payload"
         try:
             with self._write_lock:
-                ser.write(payload.encode(self.encoding, "replace"))
+                ser.write(payload)
             self._last_tx_monotonic = time.monotonic()
-            if self._is_teensy_config_tx(command):
-                self.get_logger().info(f"TX config: {command}")
-            else:
-                self.get_logger().debug(f"TX: {payload!r}")
+            self.get_logger().debug(f"TX bytes: {payload!r}")
             return True, ""
         except Exception as exc:  # noqa: BLE001 - any serial error -> reconnect
             self._on_disconnect(f"write error: {exc}")
             return False, f"write failed: {exc}"
+
+    def _write(self, command, append_terminator):
+        payload = command + (self.command_terminator if append_terminator else "")
+        ok, err = self._write_bytes(payload.encode(self.encoding, "replace"))
+        if ok:
+            if self._is_teensy_config_tx(command):
+                self.get_logger().info(f"TX config: {command}")
+            else:
+                self.get_logger().debug(f"TX: {payload!r}")
+        return ok, err
 
     def _on_tx(self, msg):
         if not self._enter_tx():
@@ -332,6 +368,19 @@ class SuccorfishDriver(Node):
             self._leave_tx()
         if not ok:
             self.get_logger().warn(f"TX dropped {msg.data!r}: {err}")
+
+    def _on_tx_bytes(self, msg):
+        raw = bytes(msg.data)
+        if not self._enter_tx():
+            self.get_logger().warn(
+                f"TX bytes dropped ({len(raw)} B): tx session busy")
+            return
+        try:
+            ok, err = self._write_bytes(raw)
+        finally:
+            self._leave_tx()
+        if not ok:
+            self.get_logger().warn(f"TX bytes dropped ({len(raw)} B): {err}")
 
     def _on_shutdown_command(self, msg):
         self._shutdown_command = msg.data

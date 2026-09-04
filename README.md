@@ -2,7 +2,7 @@
 
 A transparent ROS 2 **serial bridge** for the Succorfish Delphis modem and the
 Teensy 4.1 OWTT front-end. One node exclusively owns a single serial port and
-exposes it to the rest of the ROS graph as a protocol-agnostic line pipe, so
+exposes it to the rest of the ROS graph as a protocol-agnostic serial pipe, so
 other nodes never open the port themselves — they just publish/subscribe topics
 (or call a service).
 
@@ -14,28 +14,36 @@ but it builds standalone in any ROS 2 (Jazzy) workspace.
 | Package | Build type | Purpose |
 |---------|-----------|---------|
 | `succorfish_driver` | `ament_python` | The bridge node (`succorfish_driver_node`). |
-| `succorfish_msgs` | `ament_cmake` / `rosidl` | `Topics.msg` (centralized names), `SerialLine.msg`, `SendCommand.srv`. |
+| `succorfish_msgs` | `ament_cmake` / `rosidl` | `Topics.msg` (centralized names), `SerialLine.msg`, `SerialFrame.msg`, `SendCommand.srv`. |
 
 ## Architecture
 
 ```
             RX_TOPIC (SerialLine)            +-----------------+
    clients <----------------------------     |                 |
-                                             | succorfish_     |  serial   +--------+
-   clients ---------------------------->     | driver_node     | <-------> | modem  |
-            TX_TOPIC (std_msgs/String)       | (owns the port) |           +--------+
-                                             |                 |
-   clients <===== SendCommand srv =====>     +-----------------+
+            RX_BYTES_TOPIC (SerialFrame)     | succorfish_     |  serial   +--------+
+   clients <----------------------------     | driver_node     | <-------> | modem  |
+                                             | (owns the port) |           +--------+
+   clients ---------------------------->     |                 |
+            TX_TOPIC (std_msgs/String)       |                 |
+   clients ---------------------------->     |                 |
+            TX_BYTES_TOPIC (SerialFrame)     +-----------------+
+                                             |
+   clients <===== SendCommand srv =====>
             STATUS_TOPIC (std_msgs/Bool, latched)
 ```
 
-The driver does **not** understand the modem protocol (`$P`, `$B`, `#R...T...`,
-`#I`, ...). Framing/parsing stays in the client nodes (e.g. the helper modules in
-`serial_ping_pkg`). The driver only moves whole lines in and out.
+Existing nodes keep using the string topics. Binary NM3 payloads (`$B`/`$U` data
+that may include CR/LF) use the byte topics. The driver understands **only** the
+vendor length prefix on inbound `#B`/`#U` so those frames are not split on an
+interior newline; everything else is still newline-delimited. Application
+codecs stay client-side.
 
 The serial link itself is pluggable: the `backend` parameter swaps the real port
 for an in-memory pretend modem or a smarcUnity bridge without the client nodes
-noticing (see [Backends](#backends-where-the-bytes-come-from)).
+noticing (see [Backends](#backends-where-the-bytes-come-from)). The `test` and
+`unity` backends remain line-oriented (they decode TX as text); use the `serial`
+backend for a binary payload.
 
 ## ROS interface
 
@@ -44,8 +52,10 @@ Names are constants in `succorfish_msgs/msg/Topics.msg` (import as
 
 | Constant | Name | Type | Direction |
 |----------|------|------|-----------|
-| `RX_TOPIC` | `succorfish/rx` | `succorfish_msgs/SerialLine` | driver -> clients, one msg per inbound line |
-| `TX_TOPIC` | `succorfish/tx` | `std_msgs/String` | clients -> driver, raw command written to the port |
+| `RX_TOPIC` | `succorfish/rx` | `succorfish_msgs/SerialLine` | driver -> clients, inbound **text** lines (printable `#B`/`#U` included) |
+| `TX_TOPIC` | `succorfish/tx` | `std_msgs/String` | clients -> driver, raw command written to the port (driver appends `\r\n`) |
+| `RX_BYTES_TOPIC` | `succorfish/rx_bytes` | `succorfish_msgs/SerialFrame` | driver -> clients, every inbound frame as raw bytes (CRLF stripped) |
+| `TX_BYTES_TOPIC` | `succorfish/tx_bytes` | `succorfish_msgs/SerialFrame` | clients -> driver, raw UART bytes (**no** terminator appended) |
 | `STATUS_TOPIC` | `succorfish/connected` | `std_msgs/Bool` (latched) | driver -> clients, link up/down |
 | `SEND_COMMAND_SERVICE` | `succorfish/send_command` | `succorfish_msgs/SendCommand` | synchronous request/response |
 | `SHUTDOWN_COMMAND_TOPIC` | `succorfish/shutdown_command` | `std_msgs/String` (latched) | clients -> driver, command to write on graceful exit |
@@ -65,6 +75,28 @@ OWTT-capable nodes register `$Y<id>W` (Teensy wire mode) so the modem is always
 returned to wire mode; the plain Succorfish profile registers nothing and the
 driver writes nothing on exit. Clients using `serial_ping_pkg` do this via
 `DriverClient.register_shutdown_command(...)`.
+
+### Byte pipe (`SerialFrame`)
+
+NM3 `$B` / `$U` / `$M` payloads may be any byte value, including CR/LF. The
+string topics cannot carry that: `std_msgs/String` is UTF-8, and a newline in
+the payload would split a line-based RX parser.
+
+`SerialFrame.data` is the raw UART bytes. On TX the driver writes them as-is
+(NM3 commands need no terminator). On RX it publishes one frame per complete
+record:
+
+- `#B<aaa><nn><data>[trailer]` / `#U<nn><data>[trailer]` — consume `nn` payload
+  bytes first, then the ASCII LQI/Doppler/timestamp trailer until CRLF.
+- Everything else — split on newline as before.
+
+If a `#B`/`#U` payload is 7-bit printable ASCII it is **also** published on
+`succorfish/rx`, so existing OWTT/GPS nodes keep working. Binary payloads appear
+only on `succorfish/rx_bytes`. `$C` CIR dumps are out of scope (not length-
+prefixed the same way).
+
+`DriverClient.write_bytes(...)` / `on_frame=` wrap this. Acoustic nodes still
+use the string path until a codec actually needs binary.
 
 ### SendCommand service
 
@@ -188,7 +220,8 @@ ros2 run succorfish_driver succorfish_driver_node --ros-args \
 Quick manual check once running:
 
 ```bash
-ros2 topic echo /succorfish/rx                       # watch inbound lines
+ros2 topic echo /succorfish/rx                       # watch inbound text lines
+ros2 topic echo /succorfish/rx_bytes                 # watch raw frames
 ros2 topic pub --once /succorfish/tx std_msgs/String "{data: '$P001'}"   # send a command
 ros2 service call /succorfish/send_command succorfish_msgs/srv/SendCommand \
     "{command: '$P001', append_terminator: true, expect_regex: 'T\\d+', timeout: 3.0}"
@@ -202,9 +235,10 @@ colcon test --packages-select succorfish_driver
 python3 -m pytest test/ -q
 ```
 
-`test/test_line_assembler.py` covers the pure line-assembly logic; the pty-based
-`test/test_driver_integration.py` exercises RX/TX/SendCommand and the on-exit
-shutdown-command write over a virtual serial port. `test/test_backends.py`
+`test/test_line_assembler.py` covers newline splitting; `test/test_frame_assembler.py`
+covers length-prefixed `#B`/`#U` (including an interior LF). The pty-based
+`test/test_driver_integration.py` exercises RX/TX/SendCommand, the byte topics,
+and the on-exit shutdown-command write over a virtual serial port. `test/test_backends.py`
 unit-tests the `test`/`unity` backend logic (no ROS), and
 `test/test_backend_modes.py` runs the `test` and `unity` backends end-to-end over
 a real rclpy graph (no hardware).
@@ -215,11 +249,13 @@ All `serial_ping_pkg` nodes now talk to the driver instead of opening a port. Th
 `serial_ping_pkg.common.driver_client.DriverClient` helper wraps the interface:
 
 1. Construct `DriverClient(node, on_line=...)` — it sets up the RX subscription,
-   TX publisher, status subscription, and the `SendCommand` client.
+   TX publisher, status subscription, and the `SendCommand` client. Pass
+   `on_frame=...` if you need raw `#B`/`#U` bytes.
 2. Handle inbound lines in your `on_line` callback (run the existing parser on
-   `line.line`).
-3. Publish outbound commands with `client.write(...)`, or use `client.request(...)`
-   for blocking request/response (ping).
+   `line`). Binary frames never arrive there; they arrive on `on_frame`.
+3. Publish outbound commands with `client.write(...)`, or `client.write_bytes(...)`
+   for a raw UART payload, or use `client.request(...)` for blocking
+   request/response (ping).
 4. Optionally call `client.register_shutdown_command(...)` at startup to have the
    driver replay a final command on its own exit (see above).
 
