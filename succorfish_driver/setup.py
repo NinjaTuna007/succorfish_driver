@@ -18,6 +18,7 @@ setup(
             glob('launch/*.launch') + glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools', 'pyserial'],
+    extras_require={'test': ['pytest']},
     zip_safe=True,
     maintainer='Shekhar Devm Upadhyay',
     maintainer_email='sdup@kth.se',
