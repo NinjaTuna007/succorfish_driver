@@ -96,7 +96,9 @@ only on `succorfish/rx_bytes`. `$C` CIR dumps are out of scope (not length-
 prefixed the same way).
 
 `DriverClient.write_bytes(...)` / `on_frame=` wrap this. Acoustic nodes still
-use the string path until a codec actually needs binary.
+use the string path until a codec actually needs binary. ASCII digits vs packed
+DCCL bits is that codec, not these topics — in the usual checkout see
+`serial_ping_pkg/proto/README.md`.
 
 ### SendCommand service
 
