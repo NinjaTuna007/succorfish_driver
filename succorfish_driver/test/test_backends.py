@@ -124,8 +124,9 @@ def test_unity_tx_extracts_broadcast_payload():
     assert unity_tx_payload("$B0959.0,18.0") == "59.0,18.0"
 
 
-def test_unity_tx_marks_telemetry():
-    assert unity_tx_payload("$Kfoo=1") == "TEL:foo=1"
+def test_unity_tx_telemetry_as_is():
+    assert unity_tx_payload("$Kfoo=1") == "foo=1"
+    assert unity_tx_payload("$K05hello") == "hello"
 
 
 def test_unity_tx_gps_becomes_position():

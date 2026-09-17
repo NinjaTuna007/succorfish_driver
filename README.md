@@ -176,7 +176,7 @@ protocol, this backend keeps the firmware-specific knowledge on the ROS side and
 translates both ways:
 
 - **TX** (client → water): the outbound command's payload is extracted
-  (`$B<nn><data>` → `data`, `$K<p>` → `TEL:<p>`, `$G<lat>,<lon>` → position;
+  (`$B<nn><data>` → `data`, `$K<nn><payload>` → payload as-is, `$G<lat>,<lon>` → position;
   `$Y` config and `$P` two-way pings are not transmitted) and published as
   `StringStamped.data = "<own_modem_id>;<payload>"` on `unity.write_topic`.
 - **RX** (water → client): an incoming `StringStamped` becomes the modem lines a

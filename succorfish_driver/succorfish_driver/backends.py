@@ -263,8 +263,15 @@ def unity_tx_payload(line):
         except ValueError:
             return line[2:]
     if line.startswith("$K"):
-        # Telemetry update: the Teensy broadcasts it with a TEL: marker.
-        return "TEL:" + line[2:]
+        # Telemetry update: Teensy stores $K bytes as-is (no TEL: prefix).
+        rest = line[2:]
+        if len(rest) >= 2:
+            try:
+                n = int(rest[:2])
+                return rest[2:2 + n]
+            except ValueError:
+                pass
+        return rest
     if line.startswith("$G"):
         # GPS update -> position broadcast payload (lat,lon).
         return line[2:]
